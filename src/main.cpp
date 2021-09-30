@@ -138,6 +138,9 @@ bool Register(BLEDevice central)
 
 bool Authenticate(BLEDevice central)
 {
+
+
+  //move to Authhanlder
   String val = "";
   File uf = SD.open(USER_FILE_NAME);
   StaticJsonDocument<200> SD_doc;
@@ -165,6 +168,7 @@ bool Authenticate(BLEDevice central)
 
   if (central)
   {
+    
     while (central.connected())
     {
 
@@ -347,7 +351,7 @@ void userDataWritten(BLEDevice central, BLECharacteristic characteristic)
   const char *username_from_app = APP_doc["username"];
   const char *password_from_app = APP_doc["password"];
 
-  Serial.print("VALUE FROM APP ====");
+  Serial.println("VALUE FROM APP ====");
   Serial.println(username_from_app);
   Serial.println(password_from_app);
 
@@ -358,6 +362,7 @@ void userDataWritten(BLEDevice central, BLECharacteristic characteristic)
       Serial.print("LOGIN CORRECT");
       AuthValidateCharacteristic.writeValue("true");
       auth_data.authenticated = true;
+      return;
     }
     else
     {
