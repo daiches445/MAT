@@ -29,13 +29,13 @@ struct AuthData
 
 struct UserData
 {
-  char *username;
-  char *password;
-  char uuid[50];
+  const char *username;
+  const char *password;
+  const char *uuid;
 };
 
-File auth_file;
-File user_file;
+// File auth_file;
+// File user_file;
 
 const int ledPin = LED_BUILTIN; // pin to use for the LED
 // bool registerd = false;
@@ -139,36 +139,13 @@ bool Register(BLEDevice central)
 bool Authenticate(BLEDevice central)
 {
 
-
-  //move to Authhanlder
   String val = "";
-  File uf = SD.open(USER_FILE_NAME);
-  StaticJsonDocument<200> SD_doc;
   StaticJsonDocument<100> APP_doc;
-
-  DeserializationError err = deserializeJson(SD_doc, uf);
-
-  if (err)
-  {
-    Serial.print("DeserializationError ====");
-    Serial.println(err.c_str());
-    return false;
-  }
-  uf.close();
-
-  Serial.println("USER DETAILS FROM SD");
-  const char *username = SD_doc["username"];
-  const char *password = SD_doc["password"];
-  const char *uuid = SD_doc["uuid"];
-
-  Serial.println(username);
-  Serial.println(uuid);
-
-  uf.close();
+  DeserializationError err;
 
   if (central)
   {
-    
+
     while (central.connected())
     {
 
@@ -181,10 +158,11 @@ bool Authenticate(BLEDevice central)
         Serial.println("Auth Char written");
 
         val = AuthCodeCharacteristic.value();
+
         Serial.print("VALUE FROM APP ====");
         Serial.println(val.c_str());
 
-        if (strcmp(uuid, val.c_str()) == 0)
+        if (strcmp(user_data.uuid, val.c_str()) == 0)
         {
           AuthCodeCharacteristic.writeValue("true");
         }
@@ -208,18 +186,24 @@ bool Authenticate(BLEDevice central)
         {
           Serial.print("DeserializationError ====");
           Serial.println(err.c_str());
+          AuthUserDataCharacteristic.writeValue("DeserializationError");
+          return false;
         }
 
         const char *username_from_app = APP_doc["username"];
         const char *password_from_app = APP_doc["password"];
 
-        Serial.print("VALUE FROM APP ====");
+        Serial.println("VALUE FROM APP ====");
         Serial.println(username_from_app);
         Serial.println(password_from_app);
 
-        if (strcmp(username, username_from_app) == 0)
+        int res  = strcmp(user_data.username, username_from_app);
+        Serial.print("strcmp res ===== ");
+        Serial.println(res);
+
+        if (strcmp(user_data.username, username_from_app) == 0)
         {
-          if (strcmp(password_from_app, password) == 0)
+          if (strcmp(user_data.password, password_from_app) == 0)
           {
             Serial.print("LOGIN CORRECT");
             AuthUserDataCharacteristic.writeValue("true");
@@ -256,6 +240,32 @@ void AuthHandler(BLEDevice central)
     }
   }
 
+  File uf = SD.open(USER_FILE_NAME);
+  StaticJsonDocument<200> SD_doc;
+  UserData user_data;
+  DeserializationError err = deserializeJson(SD_doc, uf);
+
+  if (err)
+  {
+    Serial.print("DeserializationError ====");
+    Serial.println(err.c_str());
+    return;
+  }
+  uf.close();
+
+  Serial.println("USER DETAILS FROM SD");
+
+  user_data.username = SD_doc["username"];
+  user_data.password = SD_doc["password"];
+  user_data.uuid = SD_doc["uuid"];
+
+  // const char *username = SD_doc["username"];
+  // const char *password = SD_doc["password"];
+  // const char *uuid = SD_doc["uuid"];
+
+  Serial.println(user_data.username);
+  Serial.println(user_data.password);
+
   while (!auth_data.authenticated)
   {
     auth_data.authenticated = Authenticate(central);
@@ -263,7 +273,7 @@ void AuthHandler(BLEDevice central)
 
   if (auth_data.authenticated)
   {
-    BLE.addService(ignitonService);
+    BLE.setAdvertisedService(AuthService);
   }
 }
 
@@ -414,7 +424,7 @@ void setup()
 
   // add the characteristic to the service
 
-  //ledService.addCharacteristic(switchCharacteristic);
+  ignitonService.addCharacteristic(relayCharacteristic);
   AuthService.addCharacteristic(AuthRegisterCharacteristic);
   AuthService.addCharacteristic(AuthCodeCharacteristic);
   AuthService.addCharacteristic(AuthInitCharacteristic);
@@ -424,6 +434,7 @@ void setup()
   //add service
   //BLE.addService(ledService);
   BLE.addService(AuthService);
+  BLE.addService(ignitonService);
 
   // assign event handlers for connected, disconnected to peripheral
   BLE.setEventHandler(BLEConnected, AuthHandler);
