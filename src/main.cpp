@@ -242,7 +242,6 @@ void AuthHandler(BLEDevice central)
 
   File uf = SD.open(USER_FILE_NAME);
   StaticJsonDocument<200> SD_doc;
-  UserData user_data;
   DeserializationError err = deserializeJson(SD_doc, uf);
 
   if (err)
