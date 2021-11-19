@@ -3,22 +3,36 @@
 #include <SPI.h>
 #include <SD.h>
 #include <ArduinoJson.h>
+#include <max6675.h>
 
 #define INIT_CODE "12345678"
 #define AUTH_FILE_NAME "auth.txt"
 #define USER_FILE_NAME "user.txt"
 
+/////Services/////
+
 BLEService ignitonService("19B10000-E8F2-537E-4F6C-D104768A1214"); // create service
 BLEService AuthService("A0B10000-E8F2-537E-4F6C-D104768A1214");
+BLEService ResponseFromCentralService("911A0000-E8F2-537E-4F6C-D104768A1214");
 
-// create switch characteristic and allow remote device to read and write
+/////Characteristics/////
+
+//ignition on/off
 BLEByteCharacteristic relayCharacteristic("19B10001-E8F2-537E-4F6C-D104768A1214", BLERead | BLEWrite);
 
-BLEStringCharacteristic AuthCodeCharacteristic("A0B10001-E8F2-537E-4F6C-D104768A1214", BLEWrite | BLERead, 50);
+//Login
 BLEStringCharacteristic AuthUserDataCharacteristic("A0B10004-E8F2-537E-4F6C-D104768A1214", BLEWrite | BLERead, 128);
+//Register
 BLEStringCharacteristic AuthRegisterCharacteristic("A0B10002-E8F2-537E-4F6C-D104768A1214", BLERead | BLEWrite, 300);
+//Initilaize code (part of registration procedure)
 BLEStringCharacteristic AuthInitCharacteristic("A0B10003-E8F2-537E-4F6C-D104768A1214", BLERead | BLEWrite, 8);
-BLEStringCharacteristic AuthValidateCharacteristic("A0B10005-E8F2-537E-4F6C-D104768A1214", BLEWrite | BLERead, 128);
+
+//BLEStringCharacteristic AuthValidateCharacteristic("A0B10005-E8F2-537E-4F6C-D104768A1214", BLEWrite | BLERead, 128);
+
+//UNUSED == FOR UID Authentication
+BLEStringCharacteristic AuthCodeCharacteristic("A0B10001-E8F2-537E-4F6C-D104768A1214", BLEWrite | BLERead, 50);
+
+BLEByteCharacteristic responseFromCentralCharacteristic("911A0001-E8F2-537E-4F6C-D104768A1214", BLENotify);
 
 struct AuthData
 {
@@ -34,100 +48,106 @@ struct UserData
   const char *uuid;
 };
 
-// File auth_file;
-// File user_file;
+const int RelayPin = 2; // pin to use for the Relay
+const int thermo_SCK_pin = 13;//MAX6675 serial clock
+const int thermo_CS_pin = 6;//MAX6675 chip select
+const int thermo_SO_pin = 12;//MAX6675 serial out
 
-const int ledPin = LED_BUILTIN; // pin to use for the LED
-// bool registerd = false;
-//bool auth = false;
+MAX6675 thermocouple(thermo_SCK_pin,thermo_CS_pin,thermo_SO_pin);
+
+
 String auth_code;
 UserData user_data;
 AuthData auth_data;
-int auth_attempts = 0;
 
 bool Register(BLEDevice central)
 {
-  StaticJsonDocument<192> doc;
-  bool isInit_code = false;
-  String val = "";
-  File af;
-  File uf;
-  DeserializationError error;
 
-  if (central)
+  bool init_code_ok = false; //flag for initial code
+  String val = "";           //to obtain data from app
+  File user_file;            //file to save on SDcard with new user data
+  byte code_attempts = 0;    // add some delay on multiple failed code attempts.
+
+  if (central) //if user is connected
   {
     Serial.println("REGISTER === Central recognized");
 
     while (central.connected())
     {
-      val = "";
-      if (!isInit_code)
+      if (code_attempts >= 5)
       {
-        if (AuthInitCharacteristic.written())
+        code_attempts = 0;
+        delay(1000 * 60);
+      }
+
+      val = "";          //value reset
+      if (!init_code_ok) //if init code hasnt sent
+      {
+        if (AuthInitCharacteristic.written()) //check if data was sent
         {
           Serial.println("REGISTER === Init code written");
-          val = AuthInitCharacteristic.value();
+          val = AuthInitCharacteristic.value(); //data from app
 
           Serial.println("value === " + val);
           Serial.println("INIT CODE  === " INIT_CODE);
 
-          if (val != INIT_CODE)
+          if (val != INIT_CODE) //if code is wrong
           {
             Serial.println("WRONG INIT CODE === register failed.");
-            auth_attempts += 1;
-            AuthInitCharacteristic.writeValue("false");
-            return false;
+            code_attempts += 1;
+            AuthInitCharacteristic.writeValue("false"); //sent false as a response to app
           }
           else
           {
-            Serial.println("CORRECt INIT CODE.");
-            AuthInitCharacteristic.writeValue("true");
-            isInit_code = true;
+            Serial.println("CORRECT INIT CODE.");
+            AuthInitCharacteristic.writeValue("true"); //send OK to app
+            init_code_ok = true;                       //set flag to true and procced to user data gathering
           }
         }
       }
-      else
+      else //the next step after receiving correct initial code.
       {
-        if (AuthRegisterCharacteristic.written())
+        if (AuthRegisterCharacteristic.written()) //check if user data received
         {
-          Serial.println("USER DATE WRITTEN");
 
-          //AuthData ad;
-          val = AuthRegisterCharacteristic.value();
+          val = AuthRegisterCharacteristic.value();        //data from app
+          user_file = SD.open(USER_FILE_NAME, FILE_WRITE); //open SDcard file in write mode - new file will be created if exist
+
+          Serial.println("USER DATE WRITTEN");
           Serial.print("USER DATE === :");
           Serial.println(val);
 
-          uf = SD.open(USER_FILE_NAME, FILE_WRITE);
-          if (!uf)
+          if (!user_file) //error on file open/creation
           {
             Serial.println("ERROR OCCURED +++ USER FILE OPENING");
+            SD.remove(USER_FILE_NAME);
             AuthRegisterCharacteristic.writeValue("ERROR OCCURED +++ USER FILE OPENING");
-            isInit_code = false;
-            break;
+            return false;
           }
 
-          uf.write(val.c_str());
-          uf.close();
+          user_file.write(val.c_str()); //write to SD card the new user details
+          user_file.close();            //close file after writing
 
-          uf = SD.open(USER_FILE_NAME);
+          //for testing
+          user_file = SD.open(USER_FILE_NAME);
 
-          if (uf)
+          if (user_file)
           {
             Serial.print("WRITTEN DATA TO FILE ===== ");
-            while (uf.available())
+            while (user_file.available())
             {
-              Serial.write(uf.read());
+              Serial.write(user_file.read());
             }
-            uf.close();
+            user_file.close();
           }
           else
           {
-            Serial.println("ERROR OPEN uf");
+            Serial.println("ERROR OPEN user_file");
           }
 
           AuthRegisterCharacteristic.writeValue("true");
 
-          return isInit_code;
+          return true;
         }
       }
     }
@@ -138,39 +158,22 @@ bool Register(BLEDevice central)
 
 bool Authenticate(BLEDevice central)
 {
-
+  unsigned long start_time = millis();
+  unsigned long five_minutes = 300000;
   String val = "";
   StaticJsonDocument<100> APP_doc;
   DeserializationError err;
 
   if (central)
   {
-
     while (central.connected())
     {
-
-      //+++++++++++++++++++++++++++++++++
-      // UUID AUTHENTICATION
-      //+++++++++++++++++++++++++++++++++
-
-      if (AuthCodeCharacteristic.written())
+      if (start_time + five_minutes < millis())
       {
-        Serial.println("Auth Char written");
-
-        val = AuthCodeCharacteristic.value();
-
-        Serial.print("VALUE FROM APP ====");
-        Serial.println(val.c_str());
-
-        if (strcmp(user_data.uuid, val.c_str()) == 0)
-        {
-          AuthCodeCharacteristic.writeValue("true");
-        }
-        Serial.println("LOGIN FALSE");
-        AuthCodeCharacteristic.writeValue("false");
-
+        central.disconnect();
         return false;
       }
+
       //+++++++++++++++++++++++++++++++++
       // USERNAME PASSWORD AUTHENTICATION
       //+++++++++++++++++++++++++++++++++
@@ -197,7 +200,7 @@ bool Authenticate(BLEDevice central)
         Serial.println(username_from_app);
         Serial.println(password_from_app);
 
-        int res  = strcmp(user_data.username, username_from_app);
+        int res = strcmp(user_data.username, username_from_app);
         Serial.print("strcmp res ===== ");
         Serial.println(res);
 
@@ -215,9 +218,8 @@ bool Authenticate(BLEDevice central)
           }
         }
         Serial.println("LOGIN FALSE");
-        AuthUserDataCharacteristic.writeValue("false");
+        AuthUserDataCharacteristic.writeValue("username");
 
-        return false;
       }
     }
   }
@@ -225,78 +227,65 @@ bool Authenticate(BLEDevice central)
   return false;
 }
 
-void AuthHandler(BLEDevice central)
+void onConnectedHandler(BLEDevice central)
 {
-  Serial.println("AUTH_HANDLER ===");
 
+  Serial.println("AUTH_HANDLER ===");
   Serial.print("Connected event, central: ");
   Serial.println(central.address());
 
-  if (!SD.exists(USER_FILE_NAME))
+  if (!SD.exists(USER_FILE_NAME)) //if user file not exist in SD,the device hasnt yet been activated and need to be registerd.
   {
-    while (!auth_data.registerd)
+    auth_data.registerd = Register(central);
+    if (!auth_data.registerd) //if registration procces has failed disconnect current user/central device.
     {
-      auth_data.registerd = Register(central);
+      central.disconnect();
+      return;
     }
   }
 
-  File uf = SD.open(USER_FILE_NAME);
-  StaticJsonDocument<200> SD_doc;
-  DeserializationError err = deserializeJson(SD_doc, uf);
+  File user_file = SD.open(USER_FILE_NAME);                      //open user data file from SD
+  StaticJsonDocument<200> SD_doc;                                //define json document for data convertion.
+  DeserializationError err = deserializeJson(SD_doc, user_file); //convert the SD JSON data to Strings
 
-  if (err)
+  if (err) //check for deserialize/convert error
   {
     Serial.print("DeserializationError ====");
     Serial.println(err.c_str());
+    central.disconnect();
     return;
   }
-  uf.close();
+
+  user_file.close();
 
   Serial.println("USER DETAILS FROM SD");
 
-  user_data.username = SD_doc["username"];
+  user_data.username = SD_doc["username"]; //coping the user data for details comperison later
   user_data.password = SD_doc["password"];
-  user_data.uuid = SD_doc["uuid"];
-
-  // const char *username = SD_doc["username"];
-  // const char *password = SD_doc["password"];
-  // const char *uuid = SD_doc["uuid"];
+  // user_data.uuid = SD_doc["uuid"]; currently unused.
 
   Serial.println(user_data.username);
   Serial.println(user_data.password);
 
-  while (!auth_data.authenticated)
+  if(!auth_data.authenticated)
   {
     auth_data.authenticated = Authenticate(central);
   }
 
   if (auth_data.authenticated)
   {
-    BLE.setAdvertisedService(AuthService);
+    Serial.println("Login succesfull.");
+    BLE.setAdvertisedService(ignitonService);
+    BLE.setAdvertisedService(ResponseFromCentralService);
   }
 }
 
-void blePeripheralConnectHandler(BLEDevice central)
-{
-
-  // central connected event handler
-
-  AuthHandler(central);
-  // while(!registerd){
-  //   registerd = Register(central);
-  // }
-
-  // auth = Authenticate(central);
-  // if(!auth){
-  //   central.disconnect();
-  // }
-}
-
-void blePeripheralDisconnectHandler(BLEDevice central)
+void onDisconnectHandler(BLEDevice central)
 {
   // central disconnected event handler
   Serial.print("Disconnected event, central: ");
   Serial.println(central.address());
+  digitalWrite(RelayPin, LOW);
   auth_data.authenticated = false;
 }
 
@@ -311,77 +300,18 @@ void switchCharacteristicWritten(BLEDevice central, BLECharacteristic characteri
 
   // central wrote new value to characteristic, update LED
   Serial.print("Characteristic event, written: ");
-
-  if (relayCharacteristic.value())
+  byte val = relayCharacteristic.value();
+  Serial.println(val);
+  if (val)
   {
     Serial.println("LED on");
-    digitalWrite(ledPin, HIGH);
+    digitalWrite(RelayPin, HIGH);
   }
   else
   {
     Serial.println("LED off");
-    digitalWrite(ledPin, LOW);
+    digitalWrite(RelayPin, LOW);
   }
-}
-
-void userDataWritten(BLEDevice central, BLECharacteristic characteristic)
-{
-  Serial.println("DataVAlidate Char Written =====");
-  String val = "";
-  File uf = SD.open(USER_FILE_NAME);
-  StaticJsonDocument<200> Local_doc;
-  StaticJsonDocument<100> APP_doc;
-
-  DeserializationError err = deserializeJson(Local_doc, uf);
-  uf.close();
-  if (err)
-  {
-    Serial.print("DeserializationError ====");
-    Serial.println(err.c_str());
-    return;
-  }
-
-  const char *username = Local_doc["username"];
-  const char *password = Local_doc["password"];
-
-  Serial.println("USER DETAILS FROM SD");
-  Serial.println(username);
-  Serial.println(password);
-
-  val = AuthValidateCharacteristic.value();
-  err = deserializeJson(APP_doc, val.c_str());
-
-  if (err)
-  {
-    Serial.print("DeserializationError ====");
-    Serial.println(err.c_str());
-  }
-
-  const char *username_from_app = APP_doc["username"];
-  const char *password_from_app = APP_doc["password"];
-
-  Serial.println("VALUE FROM APP ====");
-  Serial.println(username_from_app);
-  Serial.println(password_from_app);
-
-  if (strcmp(username, username_from_app) == 0)
-  {
-    if (strcmp(password_from_app, password) == 0)
-    {
-      Serial.print("LOGIN CORRECT");
-      AuthValidateCharacteristic.writeValue("true");
-      auth_data.authenticated = true;
-      return;
-    }
-    else
-    {
-      AuthValidateCharacteristic.writeValue("password");
-    }
-  }
-
-  Serial.println("LOGIN FALSE");
-  AuthValidateCharacteristic.writeValue("username");
-  auth_data.authenticated = false;
 }
 
 void setup()
@@ -392,7 +322,9 @@ void setup()
   while (!Serial)
     ;
 
-  pinMode(ledPin, OUTPUT); // use the LED pin as an output
+  pinMode(RelayPin, OUTPUT); // use the LED pin as an output
+
+  //digitalWrite(thermo_CS_pin,HIGH);
 
   Serial.print("Initializing SD card...");
 
@@ -404,7 +336,20 @@ void setup()
   }
   Serial.println("initialization done.");
 
-  // begin initialization
+  SD.end();
+  
+  float temp = thermocouple.readCelsius();
+  float high_temp = 100;
+  while(temp < high_temp)
+  {
+    Serial.print("temp C -");
+    Serial.println(temp);
+    temp = thermocouple.readCelsius();
+    delay(500);
+  }
+  
+
+  // begin BLE initialization
   if (!BLE.begin())
   {
     Serial.println("starting BLE failed!");
@@ -418,70 +363,166 @@ void setup()
   BLE.setLocalName("MAT");
 
   // set the UUID for the service this peripheral advertises
-  //BLE.setAdvertisedService(ledService);
   BLE.setAdvertisedService(AuthService);
 
   // add the characteristic to the service
 
   ignitonService.addCharacteristic(relayCharacteristic);
+
   AuthService.addCharacteristic(AuthRegisterCharacteristic);
-  AuthService.addCharacteristic(AuthCodeCharacteristic);
   AuthService.addCharacteristic(AuthInitCharacteristic);
   AuthService.addCharacteristic(AuthUserDataCharacteristic);
-  AuthService.addCharacteristic(AuthValidateCharacteristic);
+  // AuthService.addCharacteristic(AuthValidateCharacteristic);
 
-  //add service
-  //BLE.addService(ledService);
+  ///WIP check if user is 'awake'
+  uint8_t const desc1_data[] = {0x01, 0x02};
+  BLEDescriptor isCentralConnectedDescriptor("2902", desc1_data, sizeof(desc1_data));
+
+  ResponseFromCentralService.addCharacteristic(responseFromCentralCharacteristic);
+  responseFromCentralCharacteristic.addDescriptor(isCentralConnectedDescriptor);
+
+  //add services
   BLE.addService(AuthService);
   BLE.addService(ignitonService);
+  BLE.addService(ResponseFromCentralService);
 
   // assign event handlers for connected, disconnected to peripheral
-  BLE.setEventHandler(BLEConnected, AuthHandler);
-  BLE.setEventHandler(BLEDisconnected, blePeripheralDisconnectHandler);
+  BLE.setEventHandler(BLEConnected, onConnectedHandler);
+  BLE.setEventHandler(BLEDisconnected, onDisconnectHandler);
 
   // assign event handlers for characteristic
   relayCharacteristic.setEventHandler(BLEWritten, switchCharacteristicWritten);
-  AuthValidateCharacteristic.setEventHandler(BLEWritten, userDataWritten);
+  //responseFromCentralCharacteristic.setEventHandler(BLEUpdated, isCentralConnected);
+  // AuthValidateCharacteristic.setEventHandler(BLEWritten, onUserDataWritten);
+
   // set an initial value for the characteristic
   relayCharacteristic.setValue(0);
-
   AuthInitCharacteristic.setValue("null");
   AuthRegisterCharacteristic.setValue("null");
+  responseFromCentralCharacteristic.setValue(0);
+
   // start advertising
   BLE.advertise();
 
   Serial.println(("Bluetooth device active, waiting for connections..."));
 }
 
+byte resFromCentral = 1;
+unsigned long time_stamp = millis();
+
 void loop()
 {
   // poll for BLE events
   BLE.poll();
+
 }
 
-// SD.remove(AUTH_FILE_NAME);
-// SD.remove(USER_FILE_NAME);
+//////(WIP) check if central connected ////
+// void isCentralConnected(BLEDevice central, BLECharacteristic characteristic)
+// {
+//   if (!auth_data.authenticated)
+//   {
+//     central.disconnect();
+//     return;
+//   }
 
-// auth_file = SD.open(AUTH_FILE_NAME,FILE_WRITE);
-// if (auth_file)
-// {
-//   auth_file.write("{\"registerd\":false,\"authenticated\":false,\"init_code\":\"12345678\"}");
-// }
-// else
-// {
-//   Serial.print("Would able to open AUTH_FILE");
-// }
-// auth_file.close();
+//   // central signal for connection
 
-// user_file = SD.open(USER_FILE_NAME,FILE_WRITE);
+//   Serial.print("Characteristic response from cental event, written: ");
 
-// if (user_file)
-// {
-//   user_file.write("{\"username\":\"init_user\",\"password\":\"init_pass\",\"mat_code\":\"28916d26-a0c7-42c4-b45c-0069ed7c37fc\"}");
-//   user_file.close();
+//   byte val = 0;
+//   characteristic.readValue(val);
+
+//   Serial.print("Updated val = ");
+//   Serial.println(val);
+//   val = 1;
+//   characteristic.writeValue(val,true);
 // }
-// else
+
+//////  - event based Authentiacte function,currently unused. ////////
+// void onUserDataWritten(BLEDevice central, BLECharacteristic characteristic)
 // {
-//   Serial.print("Would able to open user_file");
+
+//   if(!auth_data.registerd)
+//     return;
+
+//   Serial.println("DataValidate Char Written =====");
+//   String val = "";
+//   File uf = SD.open(USER_FILE_NAME);
+//   StaticJsonDocument<200> Local_doc;
+//   StaticJsonDocument<200> APP_doc;
+
+//   DeserializationError err = deserializeJson(Local_doc, uf);
+//   uf.close();
+//   if (err)
+//   {
+//     Serial.print("DeserializationError local doc ====");
+//     Serial.println(err.c_str());
+//     return;
+//   }
+
+//   const char *username = Local_doc["username"];
+//   const char *password = Local_doc["password"];
+
+//   Serial.println("USER DETAILS FROM SD");
+//   Serial.println(username);
+//   Serial.println(password);
+
+//   val = AuthValidateCharacteristic.value();
+//   err = deserializeJson(APP_doc, val.c_str());
+
+//   if (err)
+//   {
+//     Serial.print("DeserializationError data from app ====");
+//     Serial.println(err.c_str());
+//   }
+
+//   const char *username_from_app = APP_doc["username"];
+//   const char *password_from_app = APP_doc["password"];
+
+//   Serial.println("VALUE FROM APP ====");
+//   Serial.println(username_from_app);
+//   Serial.println(password_from_app);
+
+//   if (strcmp(user_data.username, username_from_app) == 0)
+//   {
+//     if (strcmp(user_data.password, password_from_app) == 0)
+//     {
+//       Serial.print("LOGIN CORRECT");
+//       AuthValidateCharacteristic.writeValue("true");
+//       auth_data.authenticated = true;
+//       return;
+//     }
+//     else
+//     {
+//       AuthValidateCharacteristic.writeValue("password");
+//     }
+//   }
+
+//   Serial.println("LOGIN FALSE");
+//   AuthValidateCharacteristic.writeValue("username");
+//   auth_data.authenticated = false;
 // }
-// user_file.close();
+
+// //+++++++++++++++++++++++++++++++++
+// // UUID AUTHENTICATION
+// //+++++++++++++++++++++++++++++++++
+
+// if (AuthCodeCharacteristic.written())
+// {
+//   Serial.println("Auth Char written");
+
+//   val = AuthCodeCharacteristic.value();
+
+//   Serial.print("VALUE FROM APP ====");
+//   Serial.println(val.c_str());
+
+//   if (strcmp(user_data.uuid, val.c_str()) == 0)
+//   {
+//     AuthCodeCharacteristic.writeValue("true");
+//   }
+//   Serial.println("LOGIN FALSE");
+//   AuthCodeCharacteristic.writeValue("false");
+
+//   return false;
+// }
