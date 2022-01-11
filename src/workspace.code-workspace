@@ -4,8 +4,8 @@
 			"path": ".."
 		},
 		{
-			"name": "tests",
-			"path": "..\\..\\tests"
+			"name": "MAT_V2",
+			"path": "..\\..\\MAT_V2"
 		}
 	],
 	"settings": {}

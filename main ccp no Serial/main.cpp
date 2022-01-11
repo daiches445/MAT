@@ -16,6 +16,7 @@ BLEService AuthService("A0B10000-E8F2-537E-4F6C-D104768A1214");
 BLEService ResponseFromCentralService("911A0000-E8F2-537E-4F6C-D104768A1214");
 BLEService tempService("5A1A0000-E8F2-537E-4F6C-D104768A1214");
 
+
 /////Characteristics/////
 
 //ignition on/off
@@ -36,7 +37,7 @@ BLEStringCharacteristic AuthCodeCharacteristic("A0B10001-E8F2-537E-4F6C-D104768A
 
 BLEByteCharacteristic responseFromCentralCharacteristic("911A0001-E8F2-537E-4F6C-D104768A1214", BLENotify);
 
-BLEFloatCharacteristic tempCharacteristic("5A1A0001-E8F2-537E-4F6C-D104768A1214", BLENotify);
+BLEFloatCharacteristic tempCharacteristic("5A1A0001-E8F2-537E-4F6C-D104768A1214",  BLENotify );
 
 struct UserData
 {
@@ -50,10 +51,6 @@ const int sd_CS_pin = 4; //SD chip select
 bool authenticated = false;
 
 UserData user_data;
-void PrintText(String text){
-  if(Serial)
-    Serial.println(text);
-}
 
 bool Register(BLEDevice central)
 {
@@ -83,6 +80,7 @@ bool Register(BLEDevice central)
           code_sent = millis();
           val = AuthInitCharacteristic.value(); //data from app
 
+
           if (val != INIT_CODE) //if code is wrong
           {
             code_attempts += 1;
@@ -105,6 +103,7 @@ bool Register(BLEDevice central)
           val = AuthRegisterCharacteristic.value();        //data from app
           user_file = SD.open(USER_FILE_NAME, FILE_WRITE); //open SDcard file in write mode - new file will be created if exist
 
+
           if (!user_file) //error on file open/creation
           {
             SD.remove(USER_FILE_NAME);
@@ -114,6 +113,7 @@ bool Register(BLEDevice central)
 
           user_file.write(val.c_str()); //write to SD card the new user details
           user_file.close();            //close file after writing
+
 
           AuthRegisterCharacteristic.writeValue("true");
           File user_file = SD.open(USER_FILE_NAME);                      //open user data file from SD
@@ -173,6 +173,7 @@ bool Authenticate(BLEDevice central)
       if (AuthLoginCharacteristic.written())
       {
 
+
         val = AuthLoginCharacteristic.value();       //get data from app
         err = deserializeJson(APP_doc, val.c_str()); //convert JSON data from app to Struct - UserData
 
@@ -186,8 +187,11 @@ bool Authenticate(BLEDevice central)
         const char *username_from_app = APP_doc["username"];
         const char *password_from_app = APP_doc["password"];
 
+
         // String local_username_string = user_data.username;
         // String local_password_string = user_data.password;
+
+
 
         if (user_data.username == username_from_app)
         {
@@ -211,7 +215,6 @@ bool Authenticate(BLEDevice central)
 
 void onConnectedHandler(BLEDevice central)
 {
-  PrintText("Cetral connected");
   AuthLoginCharacteristic.writeValue("R");
 
   if (!SD.exists(USER_FILE_NAME)) //if user file not exist in SD,the device hasnt yet been activated and need to be registerd.
@@ -239,8 +242,6 @@ void onConnectedHandler(BLEDevice central)
 
 void onDisconnectHandler(BLEDevice central)
 {
-    PrintText("Cetral disconnected");
-
   // central disconnected event handler
   digitalWrite(RelayPin, LOW);
   authenticated = false;
@@ -316,17 +317,18 @@ void ResetDevice(BLEDevice central, BLECharacteristic characteristic)
   }
 }
 
-void NotifyTemp()
-{
+void NotifyTemp(){
+
 }
 bool InitSD()
 {
 
-  PrintText("Init SD");
-  while (!SD.begin(sd_CS_pin));
-  
+  if (!SD.begin(sd_CS_pin))
+  {
+    return false;
+  }
 
-  //SD.remove(USER_FILE_NAME);
+  SD.remove(USER_FILE_NAME);
 
   if (SD.exists(USER_FILE_NAME))
   {
@@ -346,6 +348,7 @@ bool InitSD()
 
     user_data.username = uname; //coping the user data for later comparison
     user_data.password = pswd;
+
   }
   else
   {
@@ -356,10 +359,8 @@ bool InitSD()
 
 void InitBLE()
 {
-  PrintText("Init BLE");
-
   // begin BLE initialization
-  while (!BLE.begin());
+  while (!BLE.begin())
 
   // set the local name peripheral advertises
   BLE.setLocalName("MAT");
@@ -413,37 +414,33 @@ void InitBLE()
 bool imu;
 void setup()
 {
-  pinMode(RelayPin, OUTPUT);
+  pinMode(RelayPin,OUTPUT);
 
-  // Serial.begin(9600); //DELETE ON PRODUCTION
-  // while (!Serial);
-    
+
   //initialize the sd card and get signed user detail.
   InitSD();
 
   //setup BLE services,charactaristics and start advertising.
   InitBLE();
-  PrintText("Setup completed.");
 
   imu = IMU.begin();
+
 }
 
 byte resFromCentral = 1;
 unsigned long time_stamp = millis();
-float x, y, z;
+float x,y,z;
 
 void loop()
 {
   // poll for BLE events
   BLE.poll();
-  if (imu)
-  {
-    if (IMU.accelerationAvailable())
-    {
-      IMU.readAcceleration(x, y, z);
+  if(imu){
+    if(IMU.accelerationAvailable()){
+      IMU.readAcceleration(x,y,z);
 
       tempCharacteristic.writeValue(x);
-      delay(1000);
+      delay(500);
     }
   }
 }
